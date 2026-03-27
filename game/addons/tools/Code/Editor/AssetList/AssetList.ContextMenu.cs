@@ -333,45 +333,6 @@ public partial class AssetList
 		"dmx"
 	};
 
-	/// <summary>
-	/// Create vmdl files for each submesh and combine them in a prefab. Will return non null if the asset was created successfully
-	/// </summary>
-	public static unsafe Asset CreatePrefabAndModelsFromMeshFile( Asset meshFile, string targetAbsolutePath = null )
-	{
-		Log.Info( "Extracting mesh to prefab..." );
-		var sourceFile = meshFile.GetSourceFile( true );
-		var modelFilename = targetAbsolutePath ?? System.IO.Path.ChangeExtension( sourceFile, ".prefab" );
-		if ( System.IO.File.Exists( modelFilename ) )
-			return null;
-
-		var folderPath = System.IO.Path.Combine(
-			System.IO.Path.GetDirectoryName( targetAbsolutePath ) ?? string.Empty,
-			System.IO.Path.GetFileNameWithoutExtension( targetAbsolutePath )
-		);
-
-		Log.Info( "Creating directory at: " + folderPath );
-		System.IO.Directory.CreateDirectory( folderPath );
-
-		return null;
-
-		// // In the future we could just init all tools upfront
-		// if ( !g_pToolFramework2.InitEngineTool( "modeldoc_editor" ) )
-		// 	return null;
-
-		// var document = CModelDoc.Create();
-		// g_pModelDocUtils.InitFromMesh( document, meshFile.Path );
-		// document.SaveToFile( modelFilename );
-		// document.DeleteThis();
-
-		// var asset = AssetSystem.RegisterFile( modelFilename );
-		// if ( asset is null )
-		// 	return null;
-
-		// asset.Compile( true );
-
-		// return asset;
-	}
-
 	[Event( "asset.contextmenu", Priority = 50 )]
 	private protected static void OnMeshFileAssetContext( AssetContextMenu e )
 	{
