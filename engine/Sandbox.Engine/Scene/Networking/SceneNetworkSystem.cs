@@ -370,7 +370,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		MountedVPKs = await MountMaps( msg.MountedVPKs );
 	}
 
-	private static readonly GameObject.SerializeOptions _snapshotSerializeOptions = new() { SceneForNetwork = true };
+	private static readonly GameObject.SerializeOptions _snapshotSerializeOptions = new() { SceneForNetwork = true, SkipNulls = true };
 
 	/// <summary>
 	/// A client has joined and wants a snapshot of the world.
@@ -527,6 +527,8 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		} );
 	}
 
+	private static readonly GameObject.DeserializeOptions networkDeserializeOptionsCreate = new() { ClearAbsentFields = true };
+
 	/// <summary>
 	/// We have received a snapshot of the world.
 	/// </summary>
@@ -554,7 +556,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			if ( !string.IsNullOrWhiteSpace( msg.SceneData ) )
 			{
 				var sceneData = JsonNode.Parse( msg.SceneData ).AsObject();
-				Game.ActiveScene.Deserialize( sceneData );
+				Game.ActiveScene.Deserialize( sceneData, networkDeserializeOptionsCreate );
 			}
 
 			var createdNetworkObjects = new List<Tuple<GameObject, ObjectCreateMsg>>();
@@ -565,7 +567,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 					continue;
 
 				var go = new GameObject();
-				go.Deserialize( JsonNode.Parse( oc.JsonData ).AsObject() );
+				go.Deserialize( JsonNode.Parse( oc.JsonData ).AsObject(), networkDeserializeOptionsCreate );
 				createdNetworkObjects.Add( new( go, oc ) );
 			}
 
@@ -931,7 +933,8 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			gameObject?.Deserialize( gameObjectJson, new GameObject.DeserializeOptions
 			{
 				IsNetworkRefresh = true,
-				IsRefreshing = true
+				IsRefreshing = true,
+				ClearAbsentFields = true
 			} );
 		}
 
@@ -998,10 +1001,11 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 			return;
 		}
 
-		using ( var _ = CallbackBatch.Batch() )
+		using ( CallbackBatch.Batch() )
 		using ( BlobDataSerializer.LoadFromMemory( message.BlobData ) )
 		{
-			component?.Deserialize( componentJson );
+			component?.DeserializeInternal( componentJson, true );
+			component?.PostDeserialize();
 		}
 
 		root._net.UpdateFromRefresh( source, message.TableData, message.Snapshot );
@@ -1066,7 +1070,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 				using ( BlobDataSerializer.LoadFromMemory( msg.BlobData ) )
 				{
 					var go = new GameObject();
-					go.Deserialize( JsonNode.Parse( msg.JsonData ).AsObject() );
+					go.Deserialize( JsonNode.Parse( msg.JsonData ).AsObject(), networkDeserializeOptionsCreate );
 					go.NetworkSpawnRemote( msg );
 				}
 			}
@@ -1092,7 +1096,7 @@ public partial class SceneNetworkSystem : GameNetworkSystem
 		using ( CallbackBatch.Batch() )
 		using ( BlobDataSerializer.LoadFromMemory( message.BlobData ) )
 		{
-			go.Deserialize( JsonNode.Parse( message.JsonData ).AsObject() );
+			go.Deserialize( JsonNode.Parse( message.JsonData ).AsObject(), networkDeserializeOptionsCreate );
 			go.NetworkSpawnRemote( message );
 		}
 	}
