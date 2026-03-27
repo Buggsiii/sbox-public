@@ -671,9 +671,11 @@ public partial struct SceneTrace
 	/// </summary>
 	internal readonly bool FilterCallback( PhysicsShape shape )
 	{
-		var body = shape.Body;
-
-		return FilterCallback( body.GameObject );
+		//
+		// Use gameobject of the collider, gameobject of body could be an ancestor.
+		// Fallback to gameobject of body if collider is null, although this should never be the case.
+		//
+		return FilterCallback( shape.Collider?.GameObject ?? shape.Body?.GameObject );
 	}
 
 	/// <summary>
@@ -703,7 +705,6 @@ public partial struct SceneTrace
 		{
 			if ( go.IsAncestor( IgnoreHierarchy[i] ) ) return false;
 		}
-
 
 		return true;
 	}
