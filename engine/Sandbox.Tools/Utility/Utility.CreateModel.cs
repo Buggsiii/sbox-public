@@ -1,6 +1,7 @@
 ﻿using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
-using NativeEngine;
 
 namespace Editor;
 
@@ -9,7 +10,7 @@ public static partial class EditorUtility
 	/// <summary>
 	/// Create a vmdl file from a mesh. Will return non null if the asset was created successfully
 	/// </summary>
-	public static unsafe Asset CreateModelFromMeshFile( Asset meshFile, string targetAbsolutePath = null )
+	public static unsafe Asset CreateModelFromMeshFile( Asset meshFile, string targetAbsolutePath = null, IEnumerable<string> excludedParts = null, bool excludeByDefault = false )
 	{
 		var modelFilename = targetAbsolutePath ?? System.IO.Path.ChangeExtension( meshFile.GetSourceFile( true ), ".vmdl" );
 
@@ -22,144 +23,204 @@ public static partial class EditorUtility
 
 		var document = CModelDoc.Create();
 		g_pModelDocUtils.InitFromMesh( document, meshFile.Path );
+
+		var modelDirectory = System.IO.Path.GetDirectoryName( modelFilename );
+		if ( !string.IsNullOrWhiteSpace( modelDirectory ) && !System.IO.Directory.Exists( modelDirectory ) )
+			System.IO.Directory.CreateDirectory( modelDirectory );
+
 		document.SaveToFile( modelFilename );
 		document.DeleteThis();
 
 		var asset = AssetSystem.RegisterFile( modelFilename );
 		if ( asset is null )
+		{
+			var relativeModelFilename = FileSystem.Content.GetRelativePath( modelFilename );
+			if ( !string.IsNullOrWhiteSpace( relativeModelFilename ) )
+			{
+				relativeModelFilename = relativeModelFilename.Replace( '\\', '/' ).TrimStart( '/' );
+				asset = AssetSystem.RegisterFile( relativeModelFilename );
+			}
+		}
+
+		if ( asset is null )
+		{
+			Log.Info( $"Asset is null! modelFilename={modelFilename}" );
 			return null;
+		}
+
+		bool shouldApplyFilter = excludedParts is not null && excludedParts.Any();
+		if ( shouldApplyFilter )
+		{
+			Log.Info( "Applying filter." );
+			AddImportFilterExceptionList( modelFilename, excludedParts, excludeByDefault );
+		}
 
 		asset.Compile( true );
 
 		return asset;
 	}
 
-	/// <summary>
-	/// Create vmdl files for each submesh and combine them in a prefab. Will return non null if the asset was created successfully
-	/// </summary>
-	public static unsafe Asset CreatePrefabAndModelsFromMeshFile( Asset meshFile, string targetAbsolutePath = null )
+	private static void AddImportFilterExceptionList( string vmdlPath, IEnumerable<string> exceptionList, bool excludeByDefault = false )
 	{
-		Log.Info( "Extracting mesh to prefab..." );
-		var sourceFile = meshFile.GetSourceFile( true );
-		var prefabFilename = targetAbsolutePath ?? System.IO.Path.ChangeExtension( sourceFile, ".prefab" );
-		if ( System.IO.File.Exists( prefabFilename ) )
-			return null;
+		Log.Info( "Applying filter" );
+		Log.Info( exceptionList );
+		Log.Info( excludeByDefault );
+		string text = System.IO.File.ReadAllText( vmdlPath );
+		string marker = "import_filter";
+		string insertBlock = $"import_filter =\r\n{{\r\n    exclude_by_default = {excludeByDefault.ToString().ToLowerInvariant()}\r\n    exception_list =\r\n    [\r\n{string.Join( "\r\n", exceptionList.Select( n => "        \"" + n.Replace( "\"", "\\\"" ) + "\"" ) )}\r\n    ]\r\n}}\r\n";
 
-		var folderPath = System.IO.Path.Combine(
-			System.IO.Path.GetDirectoryName( prefabFilename ) ?? string.Empty,
-			System.IO.Path.GetFileNameWithoutExtension( prefabFilename )
-		);
-
-		Log.Info( "Creating directory at: " + folderPath );
-		System.IO.Directory.CreateDirectory( folderPath );
-
-		if ( !g_pToolFramework2.InitEngineTool( "modeldoc_editor" ) )
-			return null;
-
-		var previewModel = meshFile.GetPreviewModel();
-		if ( previewModel is null || !previewModel.IsValid )
+		if ( text.Contains( marker, StringComparison.OrdinalIgnoreCase ) )
 		{
-			Log.Warning( $"Could not load preview model for mesh {meshFile.Path}." );
-			return null;
-		}
-
-		var meshes = new List<(string ChildName, string MeshInput)>();
-		var bodyPartCount = previewModel.native.GetNumBodyParts();
-
-		if ( bodyPartCount > 0 )
-		{
-			for ( var i = 0; i < bodyPartCount; i++ )
+			// replace existing import_filter block in RenderMeshFile if present (best-effort)
+			int start = text.IndexOf( marker, StringComparison.OrdinalIgnoreCase );
+			int brace = text.IndexOf( '{', start );
+			if ( brace >= 0 )
 			{
-				var partName = previewModel.native.GetBodyPartName( i );
-				if ( string.IsNullOrWhiteSpace( partName ) )
-					partName = $"part_{i}";
+				int level = 0;
+				int end = -1;
+				for ( int i = brace; i < text.Length; i++ )
+				{
+					if ( text[i] == '{' ) level++;
+					else if ( text[i] == '}' ) level--;
+					if ( level == 0 )
+					{
+						end = i;
+						break;
+					}
+				}
 
-				meshes.Add( (partName, $"{meshFile.Path}:{partName}") );
+				if ( end >= 0 )
+				{
+					text = string.Concat( text.AsSpan( 0, start ), insertBlock, text.AsSpan( end + 1 ) );
+				}
+				else
+				{
+					text += "\r\n" + insertBlock;
+				}
 			}
-		}
-		else if ( previewModel.MeshCount > 0 )
-		{
-			for ( var i = 0; i < previewModel.MeshCount; i++ )
+			else
 			{
-				var meshName = previewModel.native.GetBodyPartMeshName( 0, i );
-				if ( string.IsNullOrWhiteSpace( meshName ) )
-					meshName = $"mesh_{i}";
-
-				meshes.Add( (meshName, $"{meshFile.Path}:{meshName}") );
+				text += "\r\n" + insertBlock;
 			}
 		}
 		else
 		{
-			meshes.Add( ("mesh", meshFile.Path) );
+			text += "\r\n" + insertBlock;
 		}
 
-		var createdAssets = new List<Asset>();
+		System.IO.File.WriteAllText( vmdlPath, text, System.Text.Encoding.UTF8 );
+	}
 
-		foreach ( var (childName, meshInput) in meshes )
-		{
-			var safeName = MakeSafeFilename( childName );
-			var exportModelPath = System.IO.Path.Combine( folderPath, safeName + ".vmdl" );
+	private static string[] ParseImportFilterExceptionList( string vmdlPath )
+	{
+		if ( !System.IO.File.Exists( vmdlPath ) ) return [];
 
-			if ( System.IO.File.Exists( exportModelPath ) )
+		var text = System.IO.File.ReadAllText( vmdlPath );
+		var marker = "exception_list";
+		var start = text.IndexOf( marker, StringComparison.OrdinalIgnoreCase );
+		if ( start < 0 ) return [];
+
+		var bracketStart = text.IndexOf( '[', start );
+		if ( bracketStart < 0 ) return [];
+
+		var bracketEnd = text.IndexOf( ']', bracketStart );
+		if ( bracketEnd < 0 ) return [];
+
+		var block = text[(bracketStart + 1)..bracketEnd];
+
+		var entries = block
+			.Split( ['\r', '\n'], StringSplitOptions.RemoveEmptyEntries )
+			.Select( line => line.Trim() )
+			.Select( line =>
 			{
-				Log.Warning( $"Skipping existing mesh output '{exportModelPath}'" );
-				continue;
-			}
+				line = line.TrimEnd( ',' ).Trim();
+				if ( line.StartsWith( '"' ) && line.EndsWith( '"' ) && line.Length >= 2 )
+					line = line[1..^1];
+				return line.Replace( "\\\"", "\"" ).Trim();
+			} )
+			.Where( line => !string.IsNullOrWhiteSpace( line ) )
+			.Distinct( StringComparer.OrdinalIgnoreCase )
+			.ToArray();
 
-			var success = NativeEngine.ModelDoc.CreateModelFromMeshFile( exportModelPath, meshInput, "materials/dev/reflectivity_30.vmat" );
-			if ( !success )
-			{
-				Log.Warning( $"Failed to create child model '{meshInput}'" );
-				continue;
-			}
+		return entries;
+	}
 
-			var childAsset = AssetSystem.RegisterFile( exportModelPath );
-			if ( childAsset is not null )
-				childAsset.Compile( true );
+	public static string[] GetMeshPartsFromMeshFile( Asset meshFile, string targetAbsolutePath = null )
+	{
+		string sourceFile = meshFile.GetSourceFile( true );
+		string modelFilename = targetAbsolutePath ?? System.IO.Path.ChangeExtension( sourceFile, ".vmdl" );
 
-			if ( childAsset is not null )
-				createdAssets.Add( childAsset );
-		}
+		if ( !System.IO.File.Exists( modelFilename ) )
+			_ = CreateModelFromMeshFile( meshFile, modelFilename );
 
-		if ( createdAssets.Count == 0 )
+		if ( !System.IO.File.Exists( modelFilename ) )
 		{
-			Log.Warning( "No child models were created." );
-			return null;
+			Log.Info( "File does not exist!" );
+			return [];
 		}
 
-		var prefabScene = new PrefabScene( true );
-		prefabScene.Source = new PrefabFile();
-		prefabScene.Source.RegisterWeakResourceId( prefabFilename );
-		prefabScene.Source.Register( prefabFilename );
+		var partsFromVmdl = ParseImportFilterExceptionList( modelFilename );
+		return partsFromVmdl.Length > 0 ? partsFromVmdl : [];
+	}
+
+	public static unsafe Asset CreatePrefabFromMeshFile( Asset meshFile, string targetAbsolutePath = null )
+	{
+		var sourceFile = meshFile.GetSourceFile( true );
+		var folderPath = System.IO.Path.Combine( System.IO.Path.GetDirectoryName( sourceFile ) ?? string.Empty, System.IO.Path.GetFileNameWithoutExtension( sourceFile ) );
+
+		var partNames = GetMeshPartsFromMeshFile( meshFile );
+		if ( partNames.Length == 0 )
+			return CreateModelFromMeshFile( meshFile, null );
+
+		if ( !System.IO.Directory.Exists( folderPath ) )
+			System.IO.Directory.CreateDirectory( folderPath );
+
+		var partModels = new List<(string name, string path)>();
+		foreach ( var part in partNames )
+		{
+			var safe = MakeSafeFilename( part );
+			var partVmdl = System.IO.Path.Combine( folderPath, $"{System.IO.Path.GetFileNameWithoutExtension( sourceFile )}_{safe}.vmdl" );
+			var partAsset = CreateModelFromMeshFile( meshFile, partVmdl, [part], excludeByDefault: true );
+			if ( partAsset != null )
+				partModels.Add( (name: part, path: partAsset.Path ?? partVmdl) );
+		}
+
+		var prefabFilename = targetAbsolutePath ?? System.IO.Path.ChangeExtension( sourceFile, ".prefab" );
+		var source = new PrefabFile();
+		source.RegisterWeakResourceId( prefabFilename );
+		source.Register( prefabFilename );
+		var prefab = new PrefabScene( true )
+		{
+			Source = source
+		};
 
 		GameObject root = null;
-		using ( prefabScene.Push() )
+		using ( prefab.Push() )
 		{
-			root = new GameObject( prefabScene );
-			root.Name = System.IO.Path.GetFileNameWithoutExtension( prefabFilename );
-
-			foreach ( var childAsset in createdAssets )
+			root = new( prefab )
 			{
-				if ( childAsset is null )
-					continue;
+				Name = System.IO.Path.GetFileNameWithoutExtension( prefabFilename )
+			};
 
-				var childGo = new GameObject( prefabScene );
-				childGo.Name = childAsset.Name;
-				childGo.Parent = root;
+			foreach ( var (name, path) in partModels )
+			{
+				var partObj = new GameObject( prefab )
+				{
+					Name = name,
+					Parent = root
+				};
 
-				var renderer = childGo.Components.Create<ModelRenderer>();
-				renderer.Model = Model.Load( childAsset.Path );
+				var renderer = partObj.Components.Create<ModelRenderer>();
+				renderer.Model = Model.Load( path );
 			}
 		}
 
 		if ( root is null )
 			return null;
 
-		EditorUtility.Prefabs.ConvertGameObjectToPrefab( root, prefabFilename );
-
+		Prefabs.ConvertGameObjectToPrefab( root, prefabFilename );
 		var prefabAsset = AssetSystem.RegisterFile( prefabFilename );
-		if ( prefabAsset is not null )
-			prefabAsset.Compile( true );
+		prefabAsset?.Compile( true );
 
 		return prefabAsset;
 	}
@@ -170,12 +231,9 @@ public static partial class EditorUtility
 			return "mesh";
 
 		var invalidChars = System.IO.Path.GetInvalidFileNameChars();
-		var safe = new string( name.Select( c => invalidChars.Contains( c ) ? '_' : c ).ToArray() );
+		var safe = new string( [.. name.Select( c => invalidChars.Contains( c ) ? '_' : c )] );
 
-		if ( string.IsNullOrWhiteSpace( safe ) )
-			return "mesh";
-
-		return safe;
+		return string.IsNullOrWhiteSpace( safe ) ? "mesh" : safe;
 	}
 
 	/// <summary>

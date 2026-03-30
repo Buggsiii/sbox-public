@@ -354,19 +354,20 @@ public partial class AssetList
 
 					EditorUtility.CreateModelFromMeshFile( mdl, targetPath );
 				} );
-				e.Menu.AddOption( "Extract to prefab..", "open_in_new", () =>
+				e.Menu.AddOption( "Extract mesh to prefab..", "open_in_new", () =>
 				{
-					var targetPath = EditorUtility.SaveFileDialog( "Extract to prefab..", "prefab", System.IO.Path.ChangeExtension( mdl.AbsolutePath, "prefab" ) );
+					var targetPath = EditorUtility.SaveFileDialog( "Create Prefab..", "prefab", System.IO.Path.ChangeExtension( mdl.AbsolutePath, "prefab" ) );
 					if ( targetPath is null )
 						return;
 
-					CreatePrefabAndModelsFromMeshFile( mdl, targetPath );
+					EditorUtility.CreatePrefabFromMeshFile( mdl, targetPath );
 				} );
 			}
 			else
 			{
 				// ModelDoc has native code to do this for us
 				e.Menu.AddOption( $"Create {meshes.Count()} models", "open_in_new", () => meshes.ForEach( asset => EditorUtility.CreateModelFromMeshFile( asset ) ) );
+				e.Menu.AddOption( $"Extract {meshes.Count()} meshes to prefabs", "open_in_new", () => meshes.ForEach( asset => EditorUtility.CreatePrefabFromMeshFile( asset ) ) );
 			}
 		}
 	}
